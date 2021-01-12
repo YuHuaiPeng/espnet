@@ -38,8 +38,14 @@ griffin_lim_iters=64  # the number of iterations of Griffin-Lim
 # dataset related
 datadir=/mnt/md2/datasets/COSPRO_dataset
 
+# pretrained model related
+pretrained_decoder_path=
+ept_train_config="conf/ept.v1.yaml"
+ept_decode_config="conf/ae_decode.yaml"
+
 # exp tag for managing experiments.
 tag=
+ept_tag=
 
 . utils/parse_options.sh || exit 1;
 
@@ -273,3 +279,145 @@ if [ ${stage} -le 8 ] && [ ${stop_stage} -ge 8 ]; then
             ${outdir} ${name}
     done
 fi
+
+##############################################################
+
+# Encoder pretraining
+
+if [ ${stage} -le 10 ] && [ ${stop_stage} -ge 10 ]; then
+    echo "stage 10: Encoder pretraining: data preparation"
+
+    local/make_ae_json.py --input-json ${feat_tr_dir}/data.json \
+        --output-json ${feat_tr_dir}/data.json -O ${feat_tr_dir}/ae_data.json
+    local/make_ae_json.py --input-json ${feat_dt_dir}/data.json \
+        --output-json ${feat_dt_dir}/data.json -O ${feat_dt_dir}/ae_data.json
+    local/make_ae_json.py --input-json ${feat_ev_dir}/data.json \
+        --output-json ${feat_ev_dir}/data.json -O ${feat_ev_dir}/ae_data.json
+
+fi
+
+if [ ${stage} -le 11 ] && [ ${stop_stage} -ge 11 ]; then
+    echo "stage 11: Encoder pretraining"
+
+    # Suggested usage:
+    # 1. Specify --pretrained_decoder_path (eg. exp/<..>/results/snapshot.ep.xxx)
+    # 3. Specify --train_config (original config for TTS) and --ept_train_config (new config for ept)
+    # 4. Specfiy --ept_tag
+
+    # check input arguments
+    if [ -z ${train_config} ]; then
+        echo "Please specify --train_config"
+        exit 1
+    fi
+    if [ -z ${ept_tag} ]; then
+        echo "Please specify --ept_tag"
+        exit 1
+    fi
+
+    expname=${train_set}_${backend}_ept_${ept_tag}
+    expdir=exp/${expname}
+    mkdir -p ${expdir}
+
+    train_config="$(change_yaml.py \
+        -a dec-init="${pretrained_decoder_path}" \
+        -d model-module \
+        -d batch-bins \
+        -d accum-grad \
+        -d epochs \
+        -d embed-dim \
+        -o "conf/$(basename "${train_config}" .yaml).ept.yaml" "${train_config}")"
+
+    tr_json=${feat_tr_dir}/ae_data.json
+    dt_json=${feat_dt_dir}/ae_data.json
+    ${cuda_cmd} --gpu ${ngpu} ${expdir}/ept_train.log \
+        vc_train.py \
+        --backend ${backend} \
+        --ngpu ${ngpu} \
+        --outdir ${expdir}/ept_results \
+        --tensorboard-dir tensorboard/${expname} \
+        --verbose ${verbose} \
+        --seed ${seed} \
+        --resume ${resume} \
+        --train-json ${tr_json} \
+        --valid-json ${dt_json} \
+        --config ${train_config} \
+        --config2 ${ept_train_config}
+fi
+
+if [ ${stage} -le 12 ] && [ ${stop_stage} -ge 12 ]; then
+    echo "stage 12: Encoder pretraining: decoding, synthesis, evaluation"
+    
+    # Suggested usage:
+    # 1. Specify --ept_tag
+    # 2. Specify --model
+
+    if [ -z ${ept_tag} ]; then
+        echo "Please specify --ept_tag"
+        exit 1
+    fi
+    expdir=exp/${train_set}_${backend}_ept_${ept_tag}
+    outdir=${expdir}/ept_outputs_${model}
+
+    pids=() # initialize pids
+    for name in ${dev_set} ${eval_set}; do
+    (
+        [ ! -e ${outdir}/${name} ] && mkdir -p ${outdir}/${name}
+        cp ${dumpdir}/${name}/ae_data.json ${outdir}/${name}
+        splitjson.py --parts ${nj} ${outdir}/${name}/ae_data.json
+        # decode in parallel
+        ${train_cmd} JOB=1:${nj} ${outdir}/${name}/log/decode.JOB.log \
+            vc_decode.py \
+                --backend ${backend} \
+                --ngpu 0 \
+                --verbose ${verbose} \
+                --out ${outdir}/${name}/feats.JOB \
+                --json ${outdir}/${name}/split${nj}utt/ae_data.JOB.json \
+                --model ${expdir}/ept_results/${model} \
+                --config ${ept_decode_config}
+        # concatenate scp files
+        for n in $(seq ${nj}); do
+            cat "${outdir}/${name}/feats.$n.scp" || exit 1;
+        done > ${outdir}/${name}/feats.scp
+    ) &
+    pids+=($!) # store background pids
+    done
+    i=0; for pid in "${pids[@]}"; do wait ${pid} || ((i++)); done
+    [ ${i} -gt 0 ] && echo "$0: ${i} background jobs are failed." && false
+
+    pids=() # initialize pids
+    for name in ${dev_set} ${eval_set}; do
+    (
+        [ ! -e ${outdir}_denorm/${name} ] && mkdir -p ${outdir}_denorm/${name}
+        apply-cmvn --norm-vars=true --reverse=true data/${train_set}/cmvn.ark \
+            scp:${outdir}/${name}/feats.scp \
+            ark,scp:${outdir}_denorm/${name}/feats.ark,${outdir}_denorm/${name}/feats.scp
+        convert_fbank.sh --nj ${nj} --cmd "${train_cmd}" \
+            --fs ${fs} \
+            --fmax "${fmax}" \
+            --fmin "${fmin}" \
+            --n_fft ${n_fft} \
+            --n_shift ${n_shift} \
+            --win_length "${win_length}" \
+            --n_mels ${n_mels} \
+            --iters ${griffin_lim_iters} \
+            ${outdir}_denorm/${name} \
+            ${outdir}_denorm/${name}/log \
+            ${outdir}_denorm/${name}/wav
+
+    ) &
+    pids+=($!) # store background pids
+    done
+    i=0; for pid in "${pids[@]}"; do wait ${pid} || ((i++)); done
+    [ ${i} -gt 0 ] && echo "$0: ${i} background jobs are failed." && false
+    
+    echo "Objective Evaluation"
+    for name in ${dev_set} ${eval_set}; do
+        local/ob_eval/evaluate.sh --nj ${nj} \
+            --db_root ${datadir} \
+            ${outdir} ${name}
+    done
+
+    echo "Finished."
+fi
+
+
