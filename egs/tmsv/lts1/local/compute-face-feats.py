@@ -15,7 +15,7 @@ from espnet.utils.cli_utils import get_commandline_args
 from espnet.utils.cli_writers import file_writer_helper
 from espnet2.utils.types import int_or_none
 
-from video_transform import VideoReader, Lip_Extractor
+from video_transform import Lip_Extractor, load_video
 
 
 def get_parser():
@@ -58,6 +58,7 @@ def get_parser():
     )
     parser.add_argument("rspecifier", type=str, help="video scp file")
     parser.add_argument("wspecifier", type=str, help="Write specifier")
+    parser.add_argument("info_file", type=str, help="file containing extraction information")
     return parser
 
 
@@ -71,21 +72,26 @@ def main():
     else:
         logging.basicConfig(level=logging.WARN, format=logfmt)
     logging.info(get_commandline_args())
-
+    
+    # Build lip extractor object, and defice desired lip size.
     lip_extractor = Lip_Extractor(args.shape_predictor_path)
+    lip_size = (args.lip_width, args.lip_height)
 
-    logging.info(args.rspecifier)
-    reader = VideoReader(
-        args.rspecifier, args.shape_predictor_path, (args.lip_width, args.lip_height)
-    )
-    with file_writer_helper(
-        args.wspecifier,
-        filetype=args.filetype,
-        write_num_frames=args.write_num_frames,
-        compress=args.compress,
-        compression_method=args.compression_method,
-    ) as writer:
-        for utt_id, (rate, lip_frames) in reader:
+    # Read, extract and write.
+    with open(args.rspecifier, "r") as video_scp, \
+        open(args.info_file, "w") as f_info, \
+        file_writer_helper(
+            args.wspecifier,
+            filetype=args.filetype,
+            write_num_frames=args.write_num_frames,
+            compress=args.compress,
+            compression_method=args.compression_method,
+        ) as writer:
+
+        # Loop start.
+        for line in video_scp.read().splitlines():
+            utt_id, video_path = line.split(" ")
+            rate, frames = load_video(video_path)
             if args.fps is not None and rate != args.fps:
                 raise Exception(
                     "The video sampling rate ({}) is different with the config ({}) !".format(
@@ -93,12 +99,21 @@ def main():
                     )
                 )
 
-            lip_features = numpy.array(lip_frames)
+            logging.info("Extracting lip features of {}...".format(utt_id))
+            lip_frames = lip_extractor.catch_lip(frames, lip_size)
+            lip_features = numpy.array([frame['lip_frame'] for frame in lip_frames])
             t, w, h = lip_features.shape
             lip_features = numpy.reshape(lip_features, (t, w * h))
             if args.normalize:
                 lip_features = (lip_features / 128) - 1
+
+            # write lip feature
             writer[utt_id] = lip_features
+
+            # write information
+            f_info.write(f"{utt_id}\n")
+            for frame in lip_frames:
+                f_info.write(f"{frame['detection']} {frame['bbox'][0]} {frame['bbox'][1]} {frame['bbox'][2]} {frame['bbox'][3]}\n")
 
 
 if __name__ == "__main__":

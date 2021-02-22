@@ -96,12 +96,18 @@ ${cmd} JOB=1:${nj} ${logdir}/make_face_${name}.JOB.log \
         --compress=${compress} \
         --filetype ${filetype} \
         ${logdir}/video.JOB.scp \
-        ark,scp:${facedir}/raw_face_${name}.JOB.${ext},${facedir}/raw_face_${name}.JOB.scp
+        ark,scp:${facedir}/raw_face_${name}.JOB.${ext},${facedir}/raw_face_${name}.JOB.scp \
+        ${facedir}/face_info_${name}.JOB
 
 # concatenate the .scp files together.
 for n in $(seq ${nj}); do
     cat ${facedir}/raw_face_${name}.${n}.scp || exit 1;
 done > ${data}/face_feats.scp || exit 1
+
+# concatenate the info files together.
+for n in $(seq ${nj}); do
+    cat ${facedir}/face_info_${name}.${n} || exit 1;
+done > ${data}/face_info || exit 1
 
 if ${write_utt2num_frames}; then
     for n in $(seq ${nj}); do
