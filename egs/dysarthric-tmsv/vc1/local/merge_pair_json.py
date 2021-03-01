@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+# encoding: utf-8
+
+# Copyright 2020 Nagoya University (Wen-Chin Huang)
+#  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
+
+import argparse
+from io import open
+import json
+import logging
+import sys
+
+from espnet.utils.cli_utils import get_commandline_args
+
+
+def get_parser():
+    parser = argparse.ArgumentParser(
+        description="Merge source and target data.json files into one json file.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--src-json", type=str, help="Json file for the source speaker")
+    parser.add_argument("trgjsons", type=str, nargs="+", help="json files for the target speakers")
+
+    parser.add_argument("--verbose", "-V", default=1, type=int, help="Verbose option")
+    parser.add_argument(
+        "--out",
+        "-O",
+        type=str,
+        help="The output filename. " "If omitted, then output to sys.stdout",
+    )
+    return parser
+
+
+if __name__ == "__main__":
+    parser = get_parser()
+    args = parser.parse_args()
+
+    # logging info
+    logfmt = "%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s"
+    if args.verbose > 0:
+        logging.basicConfig(level=logging.INFO, format=logfmt)
+    else:
+        logging.basicConfig(level=logging.WARN, format=logfmt)
+    logging.info(get_commandline_args())
+
+    with open(args.src_json, "rb") as f:
+        src_json = json.load(f)["utts"]
+        _ = list(src_json.keys())[0].split("_")
+        srcspk = _[0]
+    
+    data = {"utts": {}}
+    for trg_json in args.trgjsons:
+        with open(trg_json, "rb") as f:
+            trg_json = json.load(f)["utts"]
+            _ = list(trg_json.keys())[0].split("_")
+            trgspk = _[0]
+
+        # NOTE(unilight):
+        # Naming rule of dysarthic: 0101, 0102, ..., 0110, 0201, ..., 2410
+        # Naming rule of tmsv: 001, 002, ..., 320
+        # So we loop through source (dysarthic),
+        # and use (first two digit) * 10 + (last two digit) to find in target.
+        for k, v in src_json.items():
+            _ = k.split("_")
+            number = "_".join(_[1:])
+            trg_number = f"{((int(number[:2])-1)*10+int(number[2:])):03}"
+
+            entry = {
+                "input": [
+                    src_json[srcspk + "_" + number]["input"][0],
+                    trg_json[trgspk + "_" + trg_number]["input"][1]
+
+                ],
+                "output": [
+                    trg_json[trgspk + "_" + trg_number]["input"][0]
+                ]
+                
+            }
+            entry["input"][1]["name"] = "input2"
+            entry["output"][0]["name"] = "target1"
+
+            data["utts"][f"{trgspk}_{number}"] = entry
+
+    if args.out is None:
+        out = sys.stdout
+    else:
+        out = open(args.out, "w", encoding="utf-8")
+
+    json.dump(
+        data,
+        out,
+        indent=4,
+        ensure_ascii=False,
+        separators=(",", ": "),
+    )
