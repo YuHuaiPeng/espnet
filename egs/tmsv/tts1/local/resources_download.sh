@@ -16,6 +16,6 @@ fi
 if [ ! -e ${download_dir}/.resources_complete ]; then
     download_from_google_drive.sh ${download_url} ${download_dir} ".tar.gz"
     mv ${download_dir}/downloads ${download_dir}/resources
-    touch ${dir}/.resources_complete
+    touch ${download_dir}/.resources_complete
 fi
 echo "Successfully finished donwload of resources."
