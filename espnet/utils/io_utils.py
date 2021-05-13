@@ -180,9 +180,10 @@ class LoadInputsAndTargets(object):
             raise NotImplementedError
 
         if self.preprocessing is not None:
+            preprocess_feat_name = "target" if self.mode == "tts" else "input"
             # Apply pre-processing all input features
             for x_name in return_batch.keys():
-                if x_name.startswith("input"):
+                if x_name.startswith(preprocess_feat_name):
                     return_batch[x_name] = self.preprocessing(
                         return_batch[x_name], uttid_list, **self.preprocess_args
                     )

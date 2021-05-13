@@ -144,7 +144,7 @@ def get_parser():
         "--mcep_dim", default=41, type=int, help="dimension of mel cepstrum coefficient"
     )
     parser.add_argument(
-        "--mcep_alpha", default=0.41, type=int, help="all pass constant"
+        "--mcep_alpha", default=0.41, type=float, help="all pass constant"
     )
     parser.add_argument("--fftl", default=1024, type=int, help="fft length")
     parser.add_argument("--shiftms", default=5, type=int, help="frame shift (ms)")
