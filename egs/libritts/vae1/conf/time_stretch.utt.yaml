@@ -1,0 +1,6 @@
+# v2: discrete
+process:
+  - type: "utt_stretch"
+    min_stretch_ratio: 0.5
+    max_stretch_ratio: 1.5
+    interp_mode: "nearest"

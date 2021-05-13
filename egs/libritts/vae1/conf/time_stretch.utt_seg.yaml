@@ -1,0 +1,8 @@
+# v2: discrete
+process:
+  - type: "utt_seg_stretch"
+    min_segment_length: 19
+    max_segment_length: 32
+    min_stretch_ratio: 0.5
+    max_stretch_ratio: 1.5
+    interp_mode: "nearest"
